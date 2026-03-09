@@ -17,12 +17,19 @@ const ignoreLinePatterns = [
   /shop now/i, /shop all/i, /new arrivals?/i, /gift guide/i, /style edit/i,
   /extra\s+\d+%\s+off/i, /^view in browser/i, /^click here/i,
   /order number/i, /tracking number/i, /total\b/i, /billing address/i,
+  /shipping address/i, /delivery address/i,
   /payment method/i, /estimated delivery/i,
   /you might also like/i, /recommended for you/i, /recommended/i,
   /complete the look/i, /customers also/i, /more from/i,
   /trending/i, /best sellers?/i, /similar styles/i,
   /we think you'?ll love/i, /pair it with/i, /browse more/i,
-  /you may also like/i, /featured/i, /shop the/i
+  /you may also like/i, /featured/i, /shop the/i,
+  /keep.*in.*original/i, /care instructions/i,
+  /do not (wash|iron|bleach|dry clean|tumble)/i,
+  /washing instructions/i, /return policy/i, /return by/i,
+  /need help/i, /contact us/i, /help center/i,
+  /manage your order/i, /view your order/i,
+  /^\s*[.#]/, // CSS selectors
 ];
 
 const promoSectionPattern = /(?:you might also like|recommended for you|complete the look|customers also|more from this brand|trending now|best sellers|similar styles|we think you'?ll love|style picks|pair it with|you may also like|featured items|shop the look)/i;
@@ -105,6 +112,38 @@ function sanitizeLine(line: string): string {
     .trim();
 }
 
+/** Clean product name: strip quantity suffixes, bullets, brackets, etc. */
+function cleanProductName(raw: string): string {
+  return raw
+    .replace(/\s*[×x]\s*\d+\s*$/i, "")           // "× 1" or "x 2" suffix
+    .replace(/^\s*[\*•\-–]\s*/, "")                // leading bullet/asterisk
+    .replace(/\s*\(pack of \d+\)\s*/i, "")         // "(Pack of 2)"
+    .replace(/\s*\[\s*\d+\s*\]\s*/g, "")           // "[1]" index markers
+    .replace(/\s*,\s*$/, "")                       // trailing comma
+    .replace(/\s*-\s*$/, "")                       // trailing dash
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+/** Reject names that are clearly not product names (CSS selectors, addresses, instructions) */
+function isGarbageName(name: string): boolean {
+  if (/^\s*[.#]\w/.test(name)) return true;                    // CSS selectors
+  if (/shipping\s*address/i.test(name)) return true;
+  if (/billing\s*address/i.test(name)) return true;
+  if (/delivery\s*address/i.test(name)) return true;
+  if (/keep.*in.*original/i.test(name)) return true;
+  if (/care\s*instructions/i.test(name)) return true;
+  if (/return\s*(policy|label|by)/i.test(name)) return true;
+  if (/manage\s*your\s*order/i.test(name)) return true;
+  if (/view\s*your\s*order/i.test(name)) return true;
+  if (/contact\s*us/i.test(name)) return true;
+  if (/need\s*help/i.test(name)) return true;
+  if (/customer\s*service/i.test(name)) return true;
+  if (/\.(section|main|container|wrapper|header|footer|body|content)\b/i.test(name)) return true; // CSS class patterns
+  if (name.length < 3 || name.length > 120) return true;
+  return false;
+}
+
 function isLikelyClothing(text: string): boolean {
   return /(shirt|tee|t-shirt|hoodie|sweater|jacket|coat|pant|trouser|jeans|shorts|skirt|dress|shoe|sneaker|boot|loafer|bag|cap|belt|sock|active|tank|denim|cargo|knitwear|overshirt|flannel|oxford|tailored|blazer|cardigan|pullover|jogger|legging|romper|jumpsuit|vest|parka|windbreaker|sandal|runner|heel|flat|mule|clog|beanie|scarf|glove|tote|backpack|purse|wallet|sunglasses|watch|polo|blouse|camisole|tunic|henley|crop|puffer|anorak)/i.test(text);
 }
@@ -167,14 +206,16 @@ function parseLineItems(message: ParsedGmailMessage): ParsedItem[] {
     const clothingSignal = isLikelyClothing(line);
     if (!clothingSignal) continue;
 
-    const cleaned = line
-      .replace(/^[\d\-\s]+/, "")
-      .replace(/[;:,\-]+$/g, "")
-      .replace(/\s{2,}/g, " ")
-      .trim();
+    const cleaned = cleanProductName(
+      line
+        .replace(/^[\d\-\s]+/, "")
+        .replace(/[;:,\-]+$/g, "")
+        .replace(/\s{2,}/g, " ")
+        .trim()
+    );
 
     if (cleaned.length < 4 || cleaned.length > 90) continue;
-    if (isItemNoise(cleaned)) continue;
+    if (isItemNoise(cleaned) || isGarbageName(cleaned)) continue;
 
     const nearby = [line, lines[i + 1], lines[i + 2], lines[i + 3]].filter(Boolean).join(" ");
     const price = parsePrices(nearby)[0];
@@ -209,9 +250,9 @@ function parseItemsFromImageAlts(message: ParsedGmailMessage): ParsedItem[] {
   const items: ParsedItem[] = [];
 
   for (const image of message.productImages) {
-    const alt = sanitizeLine(image.alt ?? "");
+    const alt = cleanProductName(sanitizeLine(image.alt ?? ""));
     if (alt.length < 5 || alt.length > 90) continue;
-    if (isItemNoise(alt)) continue;
+    if (isItemNoise(alt) || isGarbageName(alt)) continue;
     if (promoSectionPattern.test(alt)) continue;
     if (!isLikelyClothing(alt)) continue;
 
@@ -232,13 +273,25 @@ function parseItemsFromImageAlts(message: ParsedGmailMessage): ParsedItem[] {
 }
 
 function eventFromMessage(message: ParsedGmailMessage): "order_confirmed" | "in_transit" | "delivered" | "return_initiated" | "refund_completed" {
-  const text = `${message.subject} ${message.bodyText}`.toLowerCase();
+  const text = `${message.subject} ${message.bodyText.slice(0, 4000)}`.toLowerCase();
   const intent = message.threadResolvedIntent ?? message.intent;
 
+  // Check intent first, then fall back to aggressive text matching
   if (intent === "refund") return "refund_completed";
   if (intent === "return") return "return_initiated";
-  if (/delivered|delivered\s+on|has been delivered/.test(text)) return "delivered";
+
+  // Text-based return/refund detection (catches cases where intent wasn't classified correctly)
+  if (/refund\s*(processed|issued|complete|confirmed|to your|of \$)/i.test(text)) return "refund_completed";
+  if (/credit\s*(applied|issued|has been)/i.test(text)) return "refund_completed";
+  if (/your\s*money\s*back/i.test(text)) return "refund_completed";
+  if (/return\s*(started|initiated|received|complete|confirmed|approved|processed|label|request)/i.test(text)) return "return_initiated";
+  if (/drop\s*off\s*your\s*return/i.test(text)) return "return_initiated";
+  if (/we('ve| have)\s*received\s*your\s*return/i.test(text)) return "return_initiated";
+  if (/exchange\s*(confirmed|processed|approved)/i.test(text)) return "return_initiated";
+
+  if (/delivered|delivered\s+on|has been delivered|left at|signed by/i.test(text)) return "delivered";
   if (intent === "shipping") return "in_transit";
+  if (/out for delivery|in transit|on the way|shipped/i.test(text) && intent !== "purchase") return "in_transit";
   return "order_confirmed";
 }
 
@@ -355,8 +408,9 @@ function groupByOrder(messages: ParsedGmailMessage[]): OrderGroup[] {
 function matchImageToItem(itemName: string, images: Array<{ url: string; alt?: string }>): string | undefined {
   if (images.length === 0) return undefined;
 
+  const normName = normalize(itemName);
   const itemWords = new Set(
-    normalize(itemName)
+    normName
       .split(" ")
       .filter((w) => w.length > 2)
   );
@@ -367,20 +421,37 @@ function matchImageToItem(itemName: string, images: Array<{ url: string; alt?: s
   let bestScore = 0;
 
   for (const img of images) {
-    const altWords = normalize(img.alt ?? "")
-      .split(" ")
-      .filter((w) => w.length > 2);
+    const normAlt = normalize(img.alt ?? "");
+    const altWords = normAlt.split(" ").filter((w) => w.length > 2);
+
+    // Exact word overlap scoring
     let score = 0;
     for (const word of altWords) {
       if (itemWords.has(word)) score += 1;
     }
+
+    // Substring match bonus: if the alt text contains a significant chunk of the item name
+    if (score === 0 && normAlt.length > 4) {
+      for (const word of itemWords) {
+        if (normAlt.includes(word)) score += 0.5;
+      }
+    }
+
+    // URL path matching: check if product URL path contains name words
+    if (score === 0) {
+      const urlPath = normalize(img.url.split("?")[0].split("/").slice(-3).join(" "));
+      for (const word of itemWords) {
+        if (word.length > 3 && urlPath.includes(word)) score += 0.3;
+      }
+    }
+
     if (score > bestScore) {
       bestScore = score;
       bestUrl = img.url;
     }
   }
 
-  return bestScore > 0 ? bestUrl : undefined;
+  return bestScore >= 0.5 ? bestUrl : undefined;
 }
 
 function collectGroupAttachments(messages: ParsedGmailMessage[]): AttachmentMeta[] {
@@ -409,8 +480,8 @@ function mapStructuredItemToWardrobeItem(params: {
   allImages: Array<{ url: string; alt?: string }>;
   attachments: AttachmentMeta[];
 }): WardrobeItem | null {
-  const name = sanitizeLine(params.item.name);
-  if (!name || name.length < 2 || isItemNoise(name)) return null;
+  const name = cleanProductName(sanitizeLine(params.item.name));
+  if (!name || name.length < 2 || isItemNoise(name) || isGarbageName(name)) return null;
 
   // Prefer the structured item's own image, then try matching, never fall back blindly
   const imageUrl =
@@ -454,12 +525,15 @@ function createFallbackItem(params: {
   orderJourney: string;
   attachments: AttachmentMeta[];
 }): WardrobeItem | null {
-  const cleanedSubject = sanitizeLine(params.message.subject)
-    .replace(/\b(order|receipt|confirmation|shipped|shipping|delivered|return|refund|arriving)\b/gi, "")
-    .replace(/\s{2,}/g, " ")
-    .trim();
+  const cleanedSubject = cleanProductName(
+    sanitizeLine(params.message.subject)
+      .replace(/\b(order|receipt|confirmation|shipped|shipping|delivered|return|refund|arriving)\b/gi, "")
+      .replace(/\s{2,}/g, " ")
+      .trim()
+  );
 
-  if (!isLikelyClothing(cleanedSubject) || isItemNoise(cleanedSubject)) return null;
+  if (!cleanedSubject || cleanedSubject.length < 4) return null;
+  if (!isLikelyClothing(cleanedSubject) || isItemNoise(cleanedSubject) || isGarbageName(cleanedSubject)) return null;
 
   const fallbackPrice = parsePrices(`${params.message.subject} ${params.message.bodyText}`)[0];
   const imageUrl = matchImageToItem(cleanedSubject, params.message.productImages);
@@ -565,13 +639,16 @@ export function extractItemsFromMessages(messages: ParsedGmailMessage[]): Wardro
 
     // For each parsed item, match image by name similarity (not by index)
     parsedItems.forEach((parsed) => {
-      const imageUrl = matchImageToItem(parsed.name, allImages);
+      const itemName = cleanProductName(parsed.name);
+      if (!itemName || itemName.length < 4 || isGarbageName(itemName)) return;
+
+      const imageUrl = matchImageToItem(itemName, allImages);
 
       extracted.push({
         id: crypto.randomUUID(),
         messageId: canonical.id,
         threadId: canonical.threadId,
-        name: parsed.name,
+        name: itemName,
         brand: group.brand,
         category: detectCategory(parsed.name),
         color: parsed.color,

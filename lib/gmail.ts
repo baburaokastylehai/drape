@@ -102,8 +102,8 @@ type Classification = {
 const apparelKeywordPattern = /(shirt|t-shirt|tee|hoodie|sweater|jacket|coat|pant|trouser|jeans|shorts|skirt|dress|shoe|sneaker|boot|bag|cap|belt|sock|loafer)/i;
 const purchasePattern = /(order confirmation|order #|order number|receipt|items? ordered|purchase confirmation|thank you for your order|your order has been placed)/i;
 const shippingPattern = /(shipped|shipment|in transit|out for delivery|tracking|arriving|delivery update|on the way)/i;
-const returnPattern = /(return started|return initiated|return received|return complete|drop off your return|return confirmation)/i;
-const refundPattern = /(refund processed|refund issued|refund complete|we refunded|amount refunded|your refund is on the way)/i;
+const returnPattern = /(return started|return initiated|return received|return complete|drop off your return|return confirmation|return request|return approved|return label|your return|we('ve| have) received your return|exchange (confirmed|processed|approved))/i;
+const refundPattern = /(refund processed|refund issued|refund complete|we refunded|amount refunded|your refund is on the way|refund confirmed|credit applied|credit issued|refund to your|money back)/i;
 const promoPattern = /(sale|% off|extra off|shop now|new arrivals?|just dropped|lookbook|gift guide|exclusive offer|flash sale|ends tonight|limited time|member days|promo code|black friday|cyber monday|style edit|you might also like|recommended for you|complete the look|trending now|best sellers?|shop the collection|shop the look|editors? picks?|new season|last chance|final sale)/i;
 
 async function gmailFetch<T>(token: string, path: string): Promise<T> {
