@@ -116,11 +116,15 @@ function sanitizeLine(line: string): string {
 function cleanProductName(raw: string): string {
   return raw
     .replace(/\s*[×x]\s*\d+\s*$/i, "")           // "× 1" or "x 2" suffix
-    .replace(/^\s*[\*•\-–]\s*/, "")                // leading bullet/asterisk
+    .replace(/^\s*[\*•\-–+]\s*/, "")              // leading bullet/asterisk/plus
+    .replace(/^\s*\[/, "")                         // leading bracket
+    .replace(/\]\s*\(.*$/, "")                     // trailing ](url... markdown link
     .replace(/\s*\(pack of \d+\)\s*/i, "")         // "(Pack of 2)"
     .replace(/\s*\[\s*\d+\s*\]\s*/g, "")           // "[1]" index markers
+    .replace(/\s*\(\s*$/, "")                      // trailing open parenthesis
     .replace(/\s*,\s*$/, "")                       // trailing comma
     .replace(/\s*-\s*$/, "")                       // trailing dash
+    .replace(/\.\.\.\s*$/, "")                     // trailing ellipsis
     .replace(/\s{2,}/g, " ")
     .trim();
 }
@@ -128,9 +132,14 @@ function cleanProductName(raw: string): string {
 /** Reject names that are clearly not product names (CSS selectors, addresses, instructions) */
 function isGarbageName(name: string): boolean {
   if (/^\s*[.#]\w/.test(name)) return true;                    // CSS selectors
+  if (/^\s*\[/.test(name)) return true;                        // starts with bracket
+  if (/\]\s*\(/.test(name)) return true;                       // markdown link artifact ](
+  if (/^\s*\+\s/.test(name)) return true;                      // starts with + (add-on items)
   if (/shipping\s*address/i.test(name)) return true;
   if (/billing\s*address/i.test(name)) return true;
   if (/delivery\s*address/i.test(name)) return true;
+  if (/pickup\s*address/i.test(name)) return true;
+  if (/view\s*(pickup|address|order|delivery)/i.test(name)) return true;
   if (/keep.*in.*original/i.test(name)) return true;
   if (/care\s*instructions/i.test(name)) return true;
   if (/return\s*(policy|label|by)/i.test(name)) return true;
@@ -139,6 +148,7 @@ function isGarbageName(name: string): boolean {
   if (/contact\s*us/i.test(name)) return true;
   if (/need\s*help/i.test(name)) return true;
   if (/customer\s*service/i.test(name)) return true;
+  if (/track\s*(your\s*)?(order|package|shipment)/i.test(name)) return true;
   if (/\.(section|main|container|wrapper|header|footer|body|content)\b/i.test(name)) return true; // CSS class patterns
   if (name.length < 3 || name.length > 120) return true;
   return false;
@@ -146,6 +156,11 @@ function isGarbageName(name: string): boolean {
 
 function isLikelyClothing(text: string): boolean {
   return /(shirt|tee|t-shirt|hoodie|sweater|jacket|coat|pant|trouser|jeans|shorts|skirt|dress|shoe|sneaker|boot|loafer|bag|cap|belt|sock|active|tank|denim|cargo|knitwear|overshirt|flannel|oxford|tailored|blazer|cardigan|pullover|jogger|legging|romper|jumpsuit|vest|parka|windbreaker|sandal|runner|heel|flat|mule|clog|beanie|scarf|glove|tote|backpack|purse|wallet|sunglasses|watch|polo|blouse|camisole|tunic|henley|crop|puffer|anorak)/i.test(text);
+}
+
+/** Reject items that are clearly not clothing/fashion — catches structured data from Amazon etc. */
+function isNonClothingProduct(text: string): boolean {
+  return /(bean\s*bag|deodorant|\bdeo\b|roll.on|underarm|antiperspirant|hair\s*brush|hair\s*dryer|hair\s*oil|hair\s*serum|straightener|curling\s*iron|toothbrush|toothpaste|mouthwash|shampoo|conditioner|lotion|moisturizer|cleanser|serum|face\s*wash|face\s*mask|sunscreen|spf|ayurvedic|herbal|essential\s*oil|body\s*wash|body\s*lotion|vitamins?|supplements?|protein\s*(powder|bar)|charger|cable|adapter|battery|phone\s*case|screen\s*protector|mouse|keyboard|speaker|headphone|earbuds?|earphone|monitor|laptop|tablet|hard\s*drive|usb|hdmi|printer|m-audio|m-track|audio\s*interface|microphone|midi|studio\s*monitor|amplifier|mixer|dac|sound\s*card|refill|cartridge|candle|diffuser|air\s*freshener|light\s*bulb|furniture|mattress|pillow|sheet|blanket|towel|curtain|rug|shelf|desk|chair|table|lamp|plant|pot|vase|mug|cup|plate|bowl|utensil|knife|fork|spoon|pan|skillet|blender|coffee\s*maker|book|notebook|pen|pencil|marker|tape|stapler|binder|dog|cat|pet\s*food|treats?|leash|litter|toy|puzzle|game|board\s*game|dumbbell|weight|yoga\s*mat|resistance\s*band|soap|detergent|sponge|trash\s*bag|paper\s*towel|wipe|tissue|diaper|baby\s*food|formula|stroller|car\s*seat|tool|drill|hammer|nail|screw|wrench|plier|air\s*purifier|humidifier|thermostat|smoke\s*detector)/i.test(text);
 }
 
 function inferOrderNumberFromText(text: string): string | undefined {
@@ -482,6 +497,7 @@ function mapStructuredItemToWardrobeItem(params: {
 }): WardrobeItem | null {
   const name = cleanProductName(sanitizeLine(params.item.name));
   if (!name || name.length < 2 || isItemNoise(name) || isGarbageName(name)) return null;
+  if (isNonClothingProduct(name)) return null;
 
   // Prefer the structured item's own image, then try matching, never fall back blindly
   const imageUrl =
@@ -641,6 +657,7 @@ export function extractItemsFromMessages(messages: ParsedGmailMessage[]): Wardro
     parsedItems.forEach((parsed) => {
       const itemName = cleanProductName(parsed.name);
       if (!itemName || itemName.length < 4 || isGarbageName(itemName)) return;
+      if (isNonClothingProduct(itemName)) return;
 
       const imageUrl = matchImageToItem(itemName, allImages);
 

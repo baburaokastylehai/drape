@@ -173,9 +173,14 @@ function ProductDetailModal({ item, selected, onToggle, onClose }: {
             )}
           </div>
 
-          {item.orderNumber && (
+          {(item.orderNumber || item.purchaseDate) && (
             <div className="order-info">
-              <div className="order-number">Order #{item.orderNumber}</div>
+              {item.orderNumber && <div className="order-number">Order #{item.orderNumber}</div>}
+              {item.purchaseDate && (
+                <div className="order-date">
+                  {new Date(item.purchaseDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                </div>
+              )}
               {item.orderJourney && (
                 <div className="order-journey">
                   {item.orderJourney.split(" -> ").map((step, i) => (
@@ -229,6 +234,7 @@ export default function Page() {
   const [review, setReview] = useState<Record<string, boolean>>({});
   const [importedItems, setImportedItems] = useState<WardrobeItem[]>([]);
   const [detailItem, setDetailItem] = useState<WardrobeItem | null>(null);
+  const [activeCategory, setActiveCategory] = useState<string>("All");
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -253,7 +259,8 @@ export default function Page() {
     void loadSession();
   }, []);
 
-  const stagedItems = useMemo(() => scanData?.items ?? [], [scanData]);
+  const stagedItems = useMemo(() => (scanData?.items ?? []).filter((item) => item.status !== "returned"), [scanData]);
+  const returnedCount = useMemo(() => (scanData?.items ?? []).filter((item) => item.status === "returned").length, [scanData]);
   const selectedItems = useMemo(() => stagedItems.filter((item) => review[item.id]), [stagedItems, review]);
   const stagedBrands = new Set(stagedItems.map((item) => item.brand)).size;
   const auditRows = scanData?.diagnostics?.audit ?? [];
@@ -268,6 +275,16 @@ export default function Page() {
     }
     return CATEGORY_ORDER.filter((cat) => groups.has(cat)).map((cat) => ({ category: cat, items: groups.get(cat)! }));
   }, [stagedItems]);
+
+  const availableCategories = useMemo(() => ["All", ...categoryGroups.map((g) => g.category)], [categoryGroups]);
+
+  const filteredItems = useMemo(() => {
+    if (activeCategory === "All") return stagedItems;
+    return stagedItems.filter((item) => {
+      const cat = CATEGORY_ORDER.includes(item.category) ? item.category : "Other";
+      return cat === activeCategory;
+    });
+  }, [stagedItems, activeCategory]);
 
   const categoryMix = useMemo(() => buildMap(importedItems, (item) => item.category).slice(0, 6), [importedItems]);
   const brandMix = useMemo(() => buildMap(importedItems, (item) => item.brand).slice(0, 8), [importedItems]);
@@ -479,7 +496,7 @@ export default function Page() {
               <div className="stat-card">
                 <div className="stat-label">Brands</div>
                 <div className="stat-value">{stagedBrands}</div>
-                <div className="stat-detail">{scanData.meta.schemaEmails} with structured data</div>
+                <div className="stat-detail">{returnedCount > 0 ? `${returnedCount} returned hidden` : `${scanData.meta.schemaEmails} with structured data`}</div>
               </div>
             </div>
           </div>
@@ -490,25 +507,33 @@ export default function Page() {
               Tap a card to see details. Selected items will be imported.
             </p>
 
-            <div className="category-carousels">
-              {categoryGroups.map(({ category, items }) => (
-                <div key={category} className="carousel-section">
-                  <div className="carousel-header">
-                    <h3 className="carousel-title">{category}</h3>
-                    <span className="carousel-count">{items.length}</span>
-                  </div>
-                  <div className="carousel-track">
-                    {items.map((item) => (
-                      <CompactCard
-                        key={item.id}
-                        item={item}
-                        selected={Boolean(review[item.id])}
-                        onToggle={() => setReview((prev) => ({ ...prev, [item.id]: !prev[item.id] }))}
-                        onOpen={() => setDetailItem(item)}
-                      />
-                    ))}
-                  </div>
-                </div>
+            <div className="category-pills">
+              {availableCategories.map((cat) => (
+                <button
+                  key={cat}
+                  type="button"
+                  className={`category-pill${activeCategory === cat ? " active" : ""}`}
+                  onClick={() => setActiveCategory(cat)}
+                >
+                  {cat}
+                  {cat !== "All" && (
+                    <span className="pill-count">
+                      {categoryGroups.find((g) => g.category === cat)?.items.length ?? 0}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+
+            <div className="items-grid">
+              {filteredItems.map((item) => (
+                <CompactCard
+                  key={item.id}
+                  item={item}
+                  selected={Boolean(review[item.id])}
+                  onToggle={() => setReview((prev) => ({ ...prev, [item.id]: !prev[item.id] }))}
+                  onOpen={() => setDetailItem(item)}
+                />
               ))}
             </div>
           </div>
