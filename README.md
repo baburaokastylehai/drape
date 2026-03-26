@@ -1,51 +1,57 @@
-# Drape Stage 1 Prototype
+# Drape
 
-Digital wardrobe app that solves cold start by scanning Gmail purchase receipts and extracting wardrobe items.
+hassle-free digitization of your physical wardrobe.
 
-## What this build includes
+## what it does
 
-- Google OAuth 2.0 (`gmail.readonly`) connect flow
-- Gmail purchase-history scan (`category:purchases` + retailer filtering)
-- Receipt parsing and item extraction (heuristic parser)
-- Deduplication across repeated order/shipping messages
-- Review-first UI to confirm items user still owns
-- Editorial dashboard with:
-  - wardrobe count
-  - brand mix
-  - size mix
-  - spend timeline
-  - returns/in-transit signal
+Drape connects to your Gmail, scans your purchase receipts, and automatically builds a digital record of everything you've bought — brands, items, spending patterns, all extracted from emails you already have.
 
-## Stack
+## how it works
 
-- Next.js 15 (App Router)
-- React 19 + TypeScript
-- In-memory session and scan data (Stage 1 intentionally no DB)
+1. sign in with Google (Gmail read-only access)
+2. Drape scans your inbox for purchase receipts from known retailers
+3. a heuristic parser extracts item names, brands, and prices from the email content
+4. your wardrobe builds itself — no manual entry
 
-## Setup
+## what's built
 
-1. Create Google OAuth credentials (Web application) in Google Cloud Console.
-2. Add authorized redirect URI:
-   - `http://localhost:3000/api/auth/google/callback`
-3. Copy `.env.example` to `.env` and fill values.
-4. Install deps and run:
+- Google OAuth 2.0 authentication flow
+- Gmail API integration — fetches and filters purchase emails
+- heuristic receipt parser — extracts items without needing AI
+- known brand and retailer database for matching
+- analytics dashboard — brand mix, spending timeline, purchase history
+- single-page UI built with Next.js 13 and TypeScript
 
-```bash
-npm install
-npm run dev
-```
+## tech stack
 
-Open [http://localhost:3000](http://localhost:3000).
+- Next.js 13.5 (App Router)
+- React 18
+- TypeScript
+- Google OAuth 2.0 + Gmail API
+- in-memory session storage (Stage 1 — Supabase planned for Stage 2)
 
-## Environment variables
+## current status
 
-- `GOOGLE_CLIENT_ID`
-- `GOOGLE_CLIENT_SECRET`
-- `GOOGLE_REDIRECT_URI`
-- `ANTHROPIC_API_KEY` (optional, reserved for future extraction upgrade)
+this is a Stage 1 prototype that validates the core ingestion and UX flow. it works locally with Google OAuth credentials configured.
 
-## Notes
+## to run locally:
 
-- Current extraction is deterministic/heuristic so the full pipeline is usable immediately.
-- Stage 1 goal is validating ingestion + UX flow. Stage 2 should move extraction to server queues and add persistent storage (Supabase/Postgres).
-- Session and scan state reset on server restart.
+1. clone this repo
+2. `npm install`
+3. create a Google Cloud project with Gmail API enabled
+4. set up OAuth 2.0 credentials (web application type)
+5. copy `.env.example` to `.env` and fill in your credentials
+6. `npm run dev`
+
+note: Google OAuth requires approved test users during development. the app is not publicly deployed because Google's verification process for Gmail access requires a review. this is a portfolio project demonstrating the approach and architecture.
+
+## what's next (Stage 2)
+
+- persistent storage with Supabase
+- server-side job queue for background email scanning
+- AI-powered extraction for unstructured receipts (Claude API)
+- wardrobe visualization and outfit suggestions
+
+## built by
+
+Atharva Shembekar

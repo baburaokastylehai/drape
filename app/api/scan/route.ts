@@ -2,7 +2,7 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { config } from "@/lib/config";
 import { buildSummary } from "@/lib/analytics";
-import { dedupeItems, extractItemsFromMessages } from "@/lib/extract";
+import { dedupeItems, extractItemsFromMessages, propagateReturnStatus } from "@/lib/extract";
 import { fetchPurchaseMessages } from "@/lib/gmail";
 import { refreshAccessToken } from "@/lib/google-auth";
 import { getSessionById, saveSession } from "@/lib/session-store";
@@ -66,12 +66,19 @@ export async function POST(request: Request) {
     const deduped = dedupeItems(extracted);
     logs.push(`Deduplicated to ${deduped.length} unique wardrobe entries.`);
 
-    const summary = buildSummary(extracted, deduped, scanResult.totalScanned, messages.length);
+    logs.push("Cross-referencing return status across order groups...");
+    const items = propagateReturnStatus(deduped);
+    const returnedCount = items.filter((i) => i.status === "returned").length;
+    if (returnedCount > 0) {
+      logs.push(`Identified ${returnedCount} returned items (hidden from wardrobe).`);
+    }
+
+    const summary = buildSummary(extracted, items, scanResult.totalScanned, messages.length);
 
     return NextResponse.json({
       logs,
       summary,
-      items: deduped,
+      items,
       meta: {
         rangeLabel: scanResult.rangeLabel,
         queryDescription: scanResult.queryDescription,
@@ -86,7 +93,7 @@ export async function POST(request: Request) {
       },
       diagnostics: {
         audit: scanResult.audit.slice(0, 220),
-        extractedPreview: deduped.slice(0, 120).map((item) => ({
+        extractedPreview: items.slice(0, 120).map((item) => ({
           name: item.name,
           brand: item.brand,
           status: item.status,

@@ -8,6 +8,7 @@ const colorWords = [
   "tan", "gray", "grey", "cream", "pink", "purple", "orange", "yellow", "charcoal",
   "ivory", "burgundy", "maroon", "khaki", "coral", "teal", "sage", "rust", "mustard"
 ];
+const colorWordsPattern = new RegExp(`\\b(${colorWords.join("|")})\\b`, "g");
 
 const ignoreLinePatterns = [
   /subtotal/i, /sales tax/i, /tax\b/i, /shipping\s+(fee|cost|charge)/i,
@@ -70,8 +71,20 @@ function detectBrand(from: string, subject: string, body: string): string {
 
 function detectCategory(text: string): string {
   const lower = text.toLowerCase();
-  const match = categoryKeywords.find((entry) => entry.words.some((word) => lower.includes(word)));
-  return match?.category ?? "Other";
+  // Use last-position matching: in product names the garment type typically
+  // comes last (e.g. "Blue Denim Jeans Jacket" → "jacket" at end → Outerwear)
+  let bestCategory: string | null = null;
+  let bestPosition = -1;
+  for (const entry of categoryKeywords) {
+    for (const word of entry.words) {
+      const pos = lower.lastIndexOf(word);
+      if (pos >= 0 && pos > bestPosition) {
+        bestPosition = pos;
+        bestCategory = entry.category;
+      }
+    }
+  }
+  return bestCategory ?? "Other";
 }
 
 function detectColor(text: string): string | undefined {
@@ -295,14 +308,24 @@ function eventFromMessage(message: ParsedGmailMessage): "order_confirmed" | "in_
   if (intent === "refund") return "refund_completed";
   if (intent === "return") return "return_initiated";
 
-  // Text-based return/refund detection (catches cases where intent wasn't classified correctly)
-  if (/refund\s*(processed|issued|complete|confirmed|to your|of \$)/i.test(text)) return "refund_completed";
-  if (/credit\s*(applied|issued|has been)/i.test(text)) return "refund_completed";
+  // Text-based refund detection (expanded for Indian retailers + global patterns)
+  if (/refund\s*(processed|issued|complete|confirmed|to your|of\s*[\$₹€£]|initiated|has been|successful)/i.test(text)) return "refund_completed";
+  if (/credit\s*(applied|issued|has been|of\s*[\$₹€£])/i.test(text)) return "refund_completed";
   if (/your\s*money\s*back/i.test(text)) return "refund_completed";
-  if (/return\s*(started|initiated|received|complete|confirmed|approved|processed|label|request)/i.test(text)) return "return_initiated";
+  if (/amount\s*(refunded|credited|reversed)/i.test(text)) return "refund_completed";
+  if (/reversed\s*(to|back)/i.test(text)) return "refund_completed";
+
+  // Text-based return detection (expanded for Indian retailers + global patterns)
+  if (/return\s*(started|initiated|received|complete|confirmed|approved|processed|label|request|pickup|picked|scheduled|is on|created|successful|accepted)/i.test(text)) return "return_initiated";
   if (/drop\s*off\s*your\s*return/i.test(text)) return "return_initiated";
   if (/we('ve| have)\s*received\s*your\s*return/i.test(text)) return "return_initiated";
-  if (/exchange\s*(confirmed|processed|approved)/i.test(text)) return "return_initiated";
+  if (/exchange\s*(confirmed|processed|approved|initiated|request)/i.test(text)) return "return_initiated";
+  if (/your\s*(item|order|product|package)\s*(has been|was|is being)\s*return/i.test(text)) return "return_initiated";
+  if (/return\s*(has been|was)\s*(picked|collected|scheduled|accepted)/i.test(text)) return "return_initiated";
+  if (/pickup\s*(for|of)\s*(your\s*)?(return|exchange)/i.test(text)) return "return_initiated";
+  if (/successfully\s*returned/i.test(text)) return "return_initiated";
+  if (/reverse\s*pickup/i.test(text)) return "return_initiated";
+  if (/return\s*id/i.test(text) && /return/i.test(message.subject)) return "return_initiated";
 
   if (/delivered|delivered\s+on|has been delivered|left at|signed by/i.test(text)) return "delivered";
   if (intent === "shipping") return "in_transit";
@@ -699,11 +722,14 @@ export function dedupeItems(items: WardrobeItem[]): WardrobeItem[] {
 
   for (const item of items) {
     const dateKey = item.purchaseDate ? item.purchaseDate.slice(0, 10) : "nodate";
-    const namePart = normalize(item.name).replace(/\s+/g, "");
+    // Strip color words from name for more aggressive matching across variants
+    const namePart = normalize(item.name).replace(colorWordsPattern, "").replace(/\s+/g, "");
+    // Strip filler words from brand to unify "Jack & Jones" / "Jack And Jones" / "Jack Jones"
+    const brandPart = normalize(item.brand).replace(/\b(and|the|by|india|official)\b/g, "").replace(/\s+/g, "");
 
     const key = item.orderNumber
-      ? normalize(`${item.brand}|${item.orderNumber}|${namePart}`)
-      : normalize(`${item.brand}|${namePart}|${dateKey}`);
+      ? `${brandPart}|${item.orderNumber.toUpperCase()}|${namePart}`
+      : `${brandPart}|${namePart}|${dateKey}`;
 
     const existing = deduped.get(key);
     if (!existing) {
@@ -713,6 +739,8 @@ export function dedupeItems(items: WardrobeItem[]): WardrobeItem[] {
 
     const existingScore = qualityScore(existing);
     const currentScore = qualityScore(item);
+    // If either version is "returned", keep that status (return trumps purchase)
+    const mergedStatus: ScanStatus = (existing.status === "returned" || item.status === "returned") ? "returned" : existing.status;
 
     if (currentScore > existingScore) {
       // Merge: keep better version but preserve attachments and journey from both
@@ -721,12 +749,37 @@ export function dedupeItems(items: WardrobeItem[]): WardrobeItem[] {
         ...existing,
         ...item,
         id: existing.id,
+        status: mergedStatus,
         attachments: mergedAttachments.length > 0 ? mergedAttachments : undefined
       });
+    } else if (mergedStatus !== existing.status) {
+      deduped.set(key, { ...existing, status: mergedStatus });
     }
   }
 
   return Array.from(deduped.values());
+}
+
+/** After dedup, propagate "returned" status across items with same brand + similar name.
+ *  Handles cases where return emails end up in different order groups from their purchase. */
+export function propagateReturnStatus(items: WardrobeItem[]): WardrobeItem[] {
+  const returnedSignatures = new Set<string>();
+  for (const item of items) {
+    if (item.status === "returned") {
+      const sig = `${normalize(item.brand).replace(/\s+/g, "")}|${normalize(item.name).replace(colorWordsPattern, "").replace(/\s+/g, "")}`;
+      returnedSignatures.add(sig);
+    }
+  }
+  if (returnedSignatures.size === 0) return items;
+
+  return items.map(item => {
+    if (item.status === "returned") return item;
+    const sig = `${normalize(item.brand).replace(/\s+/g, "")}|${normalize(item.name).replace(colorWordsPattern, "").replace(/\s+/g, "")}`;
+    if (returnedSignatures.has(sig)) {
+      return { ...item, status: "returned" as ScanStatus };
+    }
+    return item;
+  });
 }
 
 function mergeAttachments(a?: AttachmentMeta[], b?: AttachmentMeta[]): AttachmentMeta[] {
